@@ -244,4 +244,4 @@ Through this project, practical experience was gained in:
 
 # Author
 
-Developed by Raja Tangu
+Developed by Tangudu Raja
